@@ -21,6 +21,7 @@ import org.akhq.configs.Role;
 import org.akhq.models.*;
 import org.akhq.modules.AbstractKafkaWrapper;
 import org.akhq.repositories.*;
+import org.akhq.repositories.RecordRepository.Options.OffsetStrategy;
 import org.akhq.utils.Pagination;
 import org.akhq.utils.ResultNextList;
 import org.akhq.utils.ResultPagedList;
@@ -446,10 +447,54 @@ public class TopicController extends AbstractController {
         int records;
     }
 
+    @Secured(Role.ROLE_TOPIC_DATA_READ)
+    @Get(value = "api/{clusterId}/topic/{topicName}/export", produces = MediaType.TEXT_EVENT_STREAM)
+    @ExecuteOn(TaskExecutors.IO)
+    @Operation(tags = {"topic data export"}, summary = "Export data from a topic")
+    public Publisher<Event<SearchRecord>> export (
+            String clusterId,
+            String topicName,
+            String offsetsList
+    ) throws ExecutionException, InterruptedException {
+
+        Topic topic = topicRepository.findByName(clusterId, topicName);
+
+        RecordRepository.Options options = dataSearchOptions(
+            clusterId,
+            topicName,
+            Optional.ofNullable(StringUtils.isNotEmpty(offsetsList) ? offsetsList : null),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty()
+        );
+        options.setOffsetStrategy(OffsetStrategy.FROM);
+
+        return recordRepository
+            .searchForExport(topic, options)
+            .map(event -> {
+                SearchRecord searchRecord = new SearchRecord(
+                    event.getData().getPercent(),
+                    event.getData().getAfter()
+                );
+
+                if (!event.getData().getRecords().isEmpty()) {
+                    searchRecord.records = event.getData().getRecords();
+                }
+
+                return Event
+                    .of(searchRecord)
+                    .name(event.getName());
+            });
+    }
+
     private RecordRepository.Options dataSearchOptions(
         String cluster,
         String topicName,
-        Optional<String> after,
+        Optional<String> offsets,
         Optional<Integer> partition,
         Optional<RecordRepository.Options.Sort> sort,
         Optional<String> timestamp,
@@ -460,11 +505,10 @@ public class TopicController extends AbstractController {
     ) {
         RecordRepository.Options options = new RecordRepository.Options(environment, cluster, topicName);
 
-        after.ifPresent(options::setAfter);
+        offsets.ifPresent(options::setOffsets);
         partition.ifPresent(options::setPartition);
         sort.ifPresent(options::setSort);
         timestamp.map(r -> Instant.parse(r).toEpochMilli()).ifPresent(options::setTimestamp);
-        after.ifPresent(options::setAfter);
         searchByKey.ifPresent(options::setSearchByKey);
         searchByValue.ifPresent(options::setSearchByValue);
         searchByHeaderKey.ifPresent(options::setSearchByHeaderKey);

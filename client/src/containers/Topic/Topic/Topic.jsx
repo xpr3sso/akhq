@@ -97,7 +97,7 @@ class Topic extends Root {
         .then(() => {
           toast.success(`Topic '${topicId}' will be emptied`);
           this.setState({ showDeleteModal: false }, () => {
-            this.topicData.current.getMessages();
+            this.topicData.current._getMessages();
           });
         })
         .catch(() => {
@@ -235,10 +235,17 @@ class Topic extends Root {
             </div>
           </div>
         </div>
-        {selectedTab !== 'configs' && roles.topic && roles.topic['topic/data/insert'] && (
+        {selectedTab !== 'configs' && roles.topic && (
           <aside>
             <li className="aside-button">
-              { this.canEmptyTopic()?
+              <Link to={{
+                pathname: `/ui/${clusterId}/topic/${topicId}/export`
+              }}
+                    className="btn btn-secondary mr-2"
+              >
+                <i className="fa fa-fw fa-download" aria-hidden={true} /> Export Data
+              </Link>
+              { (this.canEmptyTopic() && roles.topic['topic/delete']) ?
                   <div
                       onClick={() => {
                         this.handleOnEmpty();
@@ -247,19 +254,20 @@ class Topic extends Root {
                     <i className="fa fa-fw fa-eraser" aria-hidden={true} /> Empty Topic
                   </div>
                   :
-                  <div title="Only enabled for topics with Delete Cleanup Policy"
+                  <div title="Only enabled for topics with Delete Cleanup Policy and topic delete rights"
                        className="btn disabled-black-button mr-2">
                     <i className="fa fa-fw fa-eraser" aria-hidden={true} /> Empty Topic
                   </div>
               }
-
-              <Link to={{
-                pathname: `/ui/${clusterId}/topic/${topicId}/copy`
-              }}
-                    className="btn btn-secondary mr-2"
-              >
-                <i className="fa fa-fw fa-level-down" aria-hidden={true} /> Copy Topic
-              </Link>
+              { roles.topic['topic/data/insert'] ? (
+                  <Link to={{
+                    pathname: `/ui/${clusterId}/topic/${topicId}/copy`
+                  }}
+                        className="btn btn-secondary mr-2"
+                  >
+                    <i className="fa fa-fw fa-level-down" aria-hidden={true} /> Copy Topic
+                  </Link>
+              ) : []}
 
               <Link to={{  pathname: `/ui/${clusterId}/tail`,
                 search: `?topicId=${topicId}` }} className="btn btn-secondary mr-2">
@@ -268,7 +276,7 @@ class Topic extends Root {
               </Link>
 
               <Link to={ `/ui/${clusterId}/topic/${topicId}/produce`}
-                className="btn btn-primary">
+                className={ roles.topic['topic/data/insert'] ? "btn btn-primary" : "btn disabled-black-button" }>
                 <i className="fa fa-plus" aria-hidden={true} /> Produce to topic
               </Link>
             </li>

@@ -111,6 +111,9 @@ export const uriTopicsCopy = (fromClusterId, fromTopicId, toClusterId, toTopicId
   return `${apiUrl}/${fromClusterId}/topic/${fromTopicId}/copy/${toClusterId}/topic/${toTopicId}`;
 }
 
+export const uriTopicExport = (clusterId, topicId, offsets) => {
+  return `${apiUrl}/${clusterId}/topic/${topicId}/export?offsetsList=${offsets}`;
+};
 
 export const uriConnects = id => {
   return `${apiUrl}/connects${id ? '?clusterId=' + id : ''}`;

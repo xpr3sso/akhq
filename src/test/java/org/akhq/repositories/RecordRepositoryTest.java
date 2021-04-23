@@ -4,23 +4,20 @@ import io.micronaut.context.env.Environment;
 import lombok.extern.slf4j.Slf4j;
 import org.akhq.models.Topic;
 import org.codehaus.httpcache4j.uri.URIBuilder;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Disabled;
-import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.akhq.AbstractTest;
 import org.akhq.KafkaTestCluster;
 import org.akhq.models.Record;
+import org.akhq.repositories.RecordRepository.Options.OffsetStrategy;
 
 import javax.inject.Inject;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Slf4j
@@ -173,7 +170,7 @@ public class RecordRepositoryTest extends AbstractTest {
             if (datas.size() == 0) {
                 hasNext = false;
             } else if (after != null) {
-                options.setAfter(after.getParametersByName("after").get(0).getValue());
+                options.setOffsets(after.getParametersByName("after").get(0).getValue());
             }
         } while (hasNext);
 
@@ -243,7 +240,45 @@ public class RecordRepositoryTest extends AbstractTest {
                 }
 
                 if (event.getData().getAfter() != null) {
-                    options.setAfter(event.getData().getAfter());
+                    options.setOffsets(event.getData().getAfter());
+                }
+            });
+
+        } while (hasNext.get());
+
+        return size.get();
+    }
+
+    @Test
+    void searchForExportAll() throws ExecutionException, InterruptedException {
+        RecordRepository.Options options = new RecordRepository.Options(environment, KafkaTestCluster.CLUSTER_ID, KafkaTestCluster.TOPIC_HUGE);
+        options.setOffsets("0-0_1-0_2-0");
+        options.setOffsetStrategy(OffsetStrategy.FROM);
+        assertEquals(3000, exportTest(options));
+    }
+
+    @Test
+    void searchForExportWithOffsets() throws ExecutionException, InterruptedException {
+        RecordRepository.Options options = new RecordRepository.Options(environment, KafkaTestCluster.CLUSTER_ID, KafkaTestCluster.TOPIC_HUGE);
+        options.setOffsets("0-500_1-500_2-500");
+        options.setOffsetStrategy(OffsetStrategy.FROM);
+        assertEquals(1500, exportTest(options));
+    }
+
+    private int exportTest(RecordRepository.Options options) throws ExecutionException, InterruptedException {
+        AtomicInteger size = new AtomicInteger();
+        AtomicBoolean hasNext = new AtomicBoolean(true);
+        Topic topic = topicRepository.findByName(options.getClusterId(), options.getTopic());
+
+        do {
+            repository.searchForExport(topic, options).blockingSubscribe(event -> {
+                size.addAndGet(event.getData().getRecords().size());
+
+                assertTrue(event.getData().getPercent() >= 0);
+                assertTrue(event.getData().getPercent() <= 100);
+
+                if (event.getName().equals("searchEnd") && event.getData().getAfter() == null) {
+                    hasNext.set(false);
                 }
             });
 

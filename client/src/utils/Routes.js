@@ -14,6 +14,7 @@ import Connect from '../containers/Connect/ConnectDetail/Connect';
 import TopicCreate from '../containers/Topic/TopicCreate/TopicCreate';
 import TopicProduce from '../containers/Topic/TopicProduce';
 import TopicCopy from '../containers/Topic/TopicCopy';
+import TopicExport from '../containers/Topic/TopicExport';
 import Loading from '../containers/Loading';
 import ConsumerGroupList from '../containers/ConsumerGroup/ConsumerGroupList';
 import ConsumerGroup from '../containers/ConsumerGroup/ConsumerGroupDetail';
@@ -159,6 +160,10 @@ class Routes extends Root {
                   path="/ui/:clusterId/topic/:topicId/produce"
                   component={TopicProduce}
                 />
+              )}
+
+              {roles && roles.topic && roles.topic['topic/data/read'] && (
+                  <Route exact path="/ui/:clusterId/topic/:topicId/export" component={TopicExport} />
               )}
 
               {roles && roles.topic && roles.topic['topic/data/insert'] && (

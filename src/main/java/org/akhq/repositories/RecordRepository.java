@@ -8,14 +8,23 @@ import io.micronaut.context.env.Environment;
 import io.micronaut.core.util.StringUtils;
 import io.micronaut.http.sse.Event;
 import io.reactivex.Flowable;
-import lombok.*;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.Setter;
+import lombok.ToString;
+import lombok.With;
 import lombok.extern.slf4j.Slf4j;
+
 import org.akhq.controllers.TopicController;
 import org.akhq.models.Partition;
 import org.akhq.models.Record;
 import org.akhq.models.Topic;
 import org.akhq.modules.AvroSerializer;
 import org.akhq.modules.KafkaModule;
+import org.akhq.repositories.RecordRepository.Options.OffsetStrategy;
 import org.akhq.utils.Debug;
 import org.apache.kafka.clients.admin.DeletedRecords;
 import org.apache.kafka.clients.admin.RecordsToDelete;
@@ -28,7 +37,17 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.codehaus.httpcache4j.uri.URIBuilder;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -350,8 +369,10 @@ public class RecordRepository extends AbstractRepository {
     private Optional<OffsetBound> getFirstOffsetForSortOldest(KafkaConsumer<byte[], byte[]> consumer, Partition partition, Options options) {
         return getFirstOffset(consumer, partition, options)
             .map(first -> {
-                if (options.after.size() > 0 && options.after.containsKey(partition.getId())) {
-                    first = options.after.get(partition.getId()) + 1;
+                if (options.offsets.containsKey(partition.getId())) {
+                    first = options.offsetStrategy.equals(OffsetStrategy.AFTER)
+                            ? options.offsets.get(partition.getId()) + 1
+                            : options.offsets.get(partition.getId());
                 }
 
                 if (first > partition.getLastOffset()) {
@@ -369,8 +390,8 @@ public class RecordRepository extends AbstractRepository {
             .map(first -> {
                 long last = partition.getLastOffset();
 
-                if (pollSizePerPartition > 0 && options.after.containsKey(partition.getId())) {
-                    last = options.after.get(partition.getId()) - 1;
+                if (pollSizePerPartition > 0 && options.offsets.containsKey(partition.getId())) {
+                    last = options.offsets.get(partition.getId()) - 1;
                 }
 
                 if (last == partition.getFirstOffset() || last < 0) {
@@ -550,28 +571,7 @@ public class RecordRepository extends AbstractRepository {
         Properties properties = new Properties();
         properties.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, options.getSize());
 
-        return Flowable.generate(() -> {
-            KafkaConsumer<byte[], byte[]> consumer = this.kafkaModule.getConsumer(options.clusterId, properties);
-            Map<TopicPartition, Long> partitions = getTopicPartitionForSortOldest(topic, options, consumer);
-
-            if (partitions.size() == 0) {
-                return new SearchState(consumer, null);
-            }
-
-            consumer.assign(partitions.keySet());
-            partitions.forEach(consumer::seek);
-
-            partitions.forEach((topicPartition, first) ->
-                log.trace(
-                    "Search [topic: {}] [partition: {}] [start: {}]",
-                    topicPartition.topic(),
-                    topicPartition.partition(),
-                    first
-                )
-            );
-
-            return new SearchState(consumer, new SearchEvent(topic));
-        }, (searchState, emitter) -> {
+        return Flowable.generate(() -> setupInitialState(options, topic,  properties), (searchState, emitter) -> {
             SearchEvent searchEvent = searchState.getSearchEvent();
             KafkaConsumer<byte[], byte[]> consumer = searchState.getConsumer();
 
@@ -629,6 +629,76 @@ public class RecordRepository extends AbstractRepository {
 
             return new SearchState(consumer, currentEvent);
         });
+    }
+
+    public Flowable<Event<SearchEvent>> searchForExport(Topic topic, Options options) {
+        return Flowable.generate(() -> setupInitialState(options, topic,  new Properties()), (searchState, emitter) -> {
+            SearchEvent searchEvent = searchState.getSearchEvent();
+            KafkaConsumer<byte[], byte[]> consumer = searchState.getConsumer();
+
+            // end
+            if (searchEvent == null || searchEvent.emptyPoll == 666) {
+
+                emitter.onNext(new SearchEvent(topic).end());
+                emitter.onComplete();
+                consumer.close();
+
+                return new SearchState(consumer, searchEvent);
+            }
+
+            SearchEvent currentEvent = new SearchEvent(searchEvent);
+
+            ConsumerRecords<byte[], byte[]> records = this.poll(consumer);
+
+            if (records.isEmpty()) {
+                currentEvent.emptyPoll++;
+            } else {
+                currentEvent.emptyPoll = 0;
+            }
+
+            List<Record> list = new ArrayList<>();
+
+            for (ConsumerRecord<byte[], byte[]> record : records) {
+                list.add(newRecord(record, options));
+                currentEvent.updateProgress(record);
+            }
+
+            currentEvent.records = list;
+
+            if (currentEvent.emptyPoll >= 1) {
+                currentEvent.emptyPoll = 666;
+                emitter.onNext(currentEvent.end());
+            } else {
+                // progress calculation does not consider starting at a different offset then 'ealiest' one
+                emitter.onNext(currentEvent.progress(options));
+            }
+
+            return new SearchState(consumer, currentEvent);
+        });
+    }
+
+
+    private SearchState setupInitialState(Options options, Topic topic, Properties properties ) throws ExecutionException, InterruptedException {
+        KafkaConsumer<byte[], byte[]> consumer = this.kafkaModule.getConsumer(options.clusterId, properties);
+        Map<TopicPartition, Long> partitions = getTopicPartitionForSortOldest(topic, options, consumer);
+
+        if (partitions.size() == 0) {
+            return new SearchState(consumer, null);
+        }
+
+        consumer.assign(partitions.keySet());
+        partitions.forEach(consumer::seek);
+
+        partitions.forEach((topicPartition, first) ->
+            log.trace(
+                "Search [topic: {}] [partition: {}] [start: {}]",
+                topicPartition.topic(),
+                topicPartition.partition(),
+                first
+            )
+        );
+
+        return new SearchState(consumer, new SearchEvent(topic));
     }
 
     private static boolean searchFilter(BaseOptions options, Record record) {
@@ -1039,15 +1109,21 @@ public class RecordRepository extends AbstractRepository {
             OLDEST,
             NEWEST,
         }
+        public enum OffsetStrategy {
+            FROM,
+            AFTER
+        }
         private String topic;
         private int size;
-        private Map<Integer, Long> after = new HashMap<>();
+        private Map<Integer, Long> offsets = new HashMap<>();
         private Sort sort;
+        private OffsetStrategy offsetStrategy;
         private Integer partition;
         private Long timestamp;
 
         public Options(Environment environment, String clusterId, String topic) {
             this.sort = Sort.OLDEST;
+            this.offsetStrategy = OffsetStrategy.AFTER;
             //noinspection ConstantConditions
             this.size = environment.getProperty("akhq.topic-data.size", Integer.class, 50);
 
@@ -1055,18 +1131,26 @@ public class RecordRepository extends AbstractRepository {
             this.topic = topic;
         }
 
-        public void setAfter(String after) {
-            this.after.clear();
+        /**
+         * Sets the offsets to be included in the search. With
+         * {@link OffsetStrategy.AFTER} (default) the next available offset will be
+         * used, with {@link OffsetStrategy.FROM} the current one will be included
+         * 
+         * @param offsetsString Containing the offset to partition relation,
+         *                      like: &lt;partition&gt;-&lt;offset&gt;_...
+         */
+        public void setOffsets(String offsetsString) {
+            this.offsets.clear();
 
             //noinspection UnstableApiUsage
             Splitter.on('_')
                 .withKeyValueSeparator('-')
-                .split(after)
-                .forEach((key, value) -> this.after.put(Integer.valueOf(key), Long.valueOf(value)));
+                .split(offsetsString)
+                .forEach((key, value) -> this.offsets.put(Integer.valueOf(key), Long.valueOf(value)));
         }
 
         public String pagination(Map<Integer, SearchEvent.Offset> offsets) {
-            Map<Integer, Long> next = new HashMap<>(this.after);
+            Map<Integer, Long> next = new HashMap<>(this.offsets);
 
             for (Map.Entry<Integer, SearchEvent.Offset> offset : offsets.entrySet()) {
                 if (this.sort == Sort.OLDEST && (!next.containsKey(offset.getKey()) || next.get(offset.getKey()) < offset.getValue().current)) {
@@ -1080,7 +1164,7 @@ public class RecordRepository extends AbstractRepository {
         }
 
         public String pagination(List<Record> records) {
-            Map<Integer, Long> next = new HashMap<>(this.after);
+            Map<Integer, Long> next = new HashMap<>(this.offsets);
             for (Record record : records) {
                 if (this.sort == Sort.OLDEST && (!next.containsKey(record.getPartition()) || next.get(record.getPartition()) < record.getOffset())) {
                     next.put(record.getPartition(), record.getOffset());
