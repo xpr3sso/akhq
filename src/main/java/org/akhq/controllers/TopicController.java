@@ -121,11 +121,10 @@ public class TopicController extends AbstractController {
 
         return this.topicRepository.findByName(cluster, name);
     }
-
     @Secured(Role.ROLE_TOPIC_DATA_INSERT)
     @Post(value = "api/{cluster}/topic/{topicName}/data")
     @Operation(tags = {"topic data"}, summary = "Produce data to a topic")
-    public Record produce(
+    public List<Record> produce(
         HttpRequest<?> request,
         String cluster,
         String topicName,
@@ -135,9 +134,12 @@ public class TopicController extends AbstractController {
         Optional<String> timestamp,
         Map<String, String> headers,
         Optional<Integer> keySchema,
-        Optional<Integer> valueSchema
+        Optional<Integer> valueSchema,
+        Boolean multiMessage,
+        Optional<String> messageSeparator,
+        Optional<String> keyValueSeparator
     ) throws ExecutionException, InterruptedException {
-        return new Record(
+        return
             this.recordRepository.produce(
                 cluster,
                 topicName,
@@ -147,13 +149,16 @@ public class TopicController extends AbstractController {
                 partition,
                 timestamp.map(r -> Instant.parse(r).toEpochMilli()),
                 keySchema,
-                valueSchema
-            ),
-            schemaRegistryRepository.getSchemaRegistryType(cluster),
-            key.map(String::getBytes).orElse(null),
-            value.getBytes(),
-            headers
-        );
+                valueSchema,
+                multiMessage,
+                messageSeparator,
+                keyValueSeparator).stream()
+                    .map(recordMetadata -> new Record(recordMetadata,
+                            schemaRegistryRepository.getSchemaRegistryType(cluster),
+                            key.map(String::getBytes).orElse(null),
+                            value.getBytes(),
+                            headers))
+                    .collect(Collectors.toList());
     }
 
     @Secured(Role.ROLE_TOPIC_DATA_READ)
