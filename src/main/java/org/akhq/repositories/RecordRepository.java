@@ -517,7 +517,7 @@ public class RecordRepository extends AbstractRepository {
         case "semicolon":
             return Arrays.asList(initialValue.split(";"));
         default:
-            return Arrays.asList(initialValue.split("\r\n|\r|\n"));
+            return List.of();
         }
     }
 
